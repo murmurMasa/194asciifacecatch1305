@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>フルーツフェイスキャッチ</title>
+<script src="clmtrackr.js"></script>
+<script>
+let tracker, cntDetect;                     //検出トラッカー、検出試行回数
+let canvas, context, video, cameraStream;   //キャンバス、ビデオ、ストリーム
+const n = 6;                                //画面分割数
+let w, pos;                                 //画面分割幅、プレイヤーの位置
+let score, startTime, request;               //スコア、開始時間、リクエスト
+//フルーツ
+const fruits = new Array();
+const code = ["0x1f352", "0x1f349", "0x1f347", "0x1f34e", "0x1f34d", "0x1f34c"];    //フルーツの絵文字の文字コード
+
+const init = () => {
+    //キャンバス、エリア幅、ビデオの取得、左右反転
+    canvas = document.getElementById("image");      //キャンバスを取得
+    context = canvas.getContext("2d");
+    context.lineWidth = 5;
+    w = canvas.width / n;
+    video = document.getElementById("video");       //動画表示エリアを取得
+    reverse();
+    //検出トラッカーの生成
+    tracker = new clm.tracker();
+    tracker.init();
+}
+
+const startGame = () => {
+    //ゲームの初期化
+    [cntDetect, score, pos] = [0, 0, 0];
+    for (let i=0; i<code.length; i++) {         //フルーツの数6個分くり返し
+       const x = Math.floor(Math.random() * n) * w + w/2;   //出現位置はランダム
+       fruits[i] = {"x":x, "y":-100*i, "code":code[i], "status":"alive"};
+    }
+    //カメラの接続（映像のみ：640×360）
+    const media = navigator.mediaDevices.getUserMedia({ //ビデオの使用許可を要求する
+       audio: false,
+       video: {width: {ideal:640}, height: {ideal:360}} 
+    }).then(stream => {     //カメラからの入力
+       //カメラからの映像をビデオにセット
+       video.srcObject = stream;
+       cameraStream = stream;
+       //検出開始
+       tracker.start(video);
+       detect();
+       document.getElementById("start").disabled = true;    //スタートボタンを無効にする
+    }).catch(error => {
+        //エラー
+        document.getElementById("message").innerText = error;   //メッセージにエラーを表示する
+    });
+}
+
+const detect = () => {
+    //検出
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    tracker.draw(canvas);                                   //検出した顔モデルを表示
+    if (tracker.getConvergence() < 500) {                   //顔検出の収束値が500未満なら成功
+       //ゲーム開始
+       document.getElementById("message").innerText = "スタート！";
+       window.cancelAnimationFrame(request);                //detect()関数の呼び出しをキャンセル
+       startTime = Date.now();                              //現在時刻を保存
+       update();   
+    } else if (cntDetect >= 1000) {                         //1000フレーム以上たったら
+        //検出失敗
+        document.getElementById("message").innerText = "検出失敗";
+        tracker.stop();
+        window.cancelAnimationFrame(request);
+        document.getElementById("start").disabled = false;
+    } else {
+        document.getElementById("message").innerText = "検出中・・・";
+        cntDetect++;
+        request = window.requestAnimationFrame(detect);     //detect()関数を再呼び出し
+    }
+}
+
+const update = () => {
+    //顔の中心座標を検出
+    const position = tracker.getCurrentPosition();          //顔モデルの座標を取得する
+    let tx = 0;
+    if (tracker.getConvergence() < 999999) {
+        for (p of position) {                               //顔モデルのx座標の平均値を求める
+           tx += p[0];
+        }
+        tx /= position.length;
+        if(tx < 0) tx = 0;                                  //画面からのはみ出しを補正
+        if (tx >= canvas.width) tx = canvas.width - 1;
+        pos = Math.floor(tx/w);
+    }
+    //プレイヤー、ガイド枠の描画
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    drawText(String.fromCodePoint("0x1f424"), pos*w+w/2, canvas.height-30, 60); //プレイヤー（ヒヨコの絵文字）を表示
+    context.strokeRect(pos*w+5, 5, canvas.width/n-10, canvas.height-10);        //ガイド枠を表示
+    //フルーツの落下、描画
+    for (fruit of fruits) {
+        fruit.y += 2;
+        if (fruit.y > canvas.height) fruit.status ="dead";
+        if ((fruit.status == "alive")&&(fruit.x == pos*w+w/2)                   //ヒヨコとフルーツが重なったとき
+           &&(fruit.y > canvas.height-60)) {
+           //キャッチ
+           score += 100;
+           fruit.status = "dead";
+        }
+        if (fruit.status == "dead") {
+            //落下、上へ戻す
+            fruit.x = Math.floor(Math.random() * n) * w + w/2;
+            fruit.y = -100;
+            fruit.status = "alive";
+        }
+        drawText(String.fromCodePoint(fruit.code), fruit.x, fruit.y);   //フルーツを表示
+    }
+    //スコア、残り時間
+    document.getElementById("score").innerText = score;                 //スコアを表示
+    const time = Math.floor(60 - (Date.now() - startTime) / 1000);
+    document.getElementById("time").innerText = ("0" + time).slice(-2); //残り時間を表示
+    if (time == 0) {
+        //終了、カメラ切断
+        document.getElementById("message").innerText = "終了";
+        tracker.stop();                                                 //顔検出を停止
+        window.cancelAnimationFrame(request);
+        document.getElementById("start").disabled = false;
+        cameraStream.getVideoTracks()[0].stop();                        //カメラの入力を停止
+    } else {
+        //更新
+        request = window.requestAnimationFrame(update);                 //update()関数を再呼び出し
+    }
+}
+
+const drawText = (text, x, y, size = 30) => {       //引数sizeのデフォルト値は30
+    //テキストの描画
+    context.textAlign = "center";                   //文字の位置左右センター
+    context.textBaseline = "middle";                //文字の位置上下センター
+    context.font = `${size}px sans-serif`;
+    context.fillText(text, x, y);
+}
+
+const reverse = () => {
+    //ビデオ、キャンバスの左右反転
+    video.classList.remove("reverse");              //動画表示エリアとキャンバスからreverseクラスを削除
+    canvas.classList.remove("reverse");
+    if (document.getElementById("checkReverse").checked) {    //左右反転チェックボックスにチェックがついていたら
+       video.classList.add("reverse");                          //reverseクラスを追加
+       canvas.classList.add("reverse");
+    }
+}
+</script>
+<style>
+.bold {font-weight: bold;}
+.blue {color: #0000FF;}
+.red {color: #FF0000;}
+#gameArea {position: relative;}
+video {background-color: #000000;}
+canvas {
+    position: absolute;
+    top: 0px;
+    left: 0px;
+}
+.reverse {transform: scale(-1, 1);}
+</style>
+</head>
+<body onload="init()">
+<p>フルーツフェイスキャッチ</p>
+<input type="button" id="start" value="スタート" onclick="startGame()">
+<input type="checkbox" id="checkReverse" onchange="reverse()" checked>左右反転
+<hr>
+残り時間:<span id="time" class="bold blue">60</span>
+SCORE:<span id="score" class="bold blue">0</span>
+<span id="message" class="red"></span>
+<hr>
+<div id="gameArea">
+<video id="video" width="640" height="360" autoplay></video>
+<canvas id="image" width="640" height="360"></canvas>
+</div>
+</body>
+</html>
